@@ -11,12 +11,18 @@ from google import genai
 # CONFIG
 # ============================================================
 
-load_dotenv()
+# Always load .env from the backend directory.
+# This works whether the file is imported from:
+#   backend/
+# or from:
+#   TraceForge/
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(ENV_PATH)
 
 api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    raise RuntimeError("GEMINI_API_KEY is missing from .env")
+    raise RuntimeError("GEMINI_API_KEY is missing from backend/.env")
 
 client = genai.Client(api_key=api_key)
 
@@ -48,6 +54,7 @@ TEXT_EXTENSIONS = {
     ".yml",
 }
 
+
 IGNORED_DIRS = {
     ".git",
     "node_modules",
@@ -57,6 +64,7 @@ IGNORED_DIRS = {
     "__pycache__",
     ".idea",
     ".next",
+    ".pytest_cache",
 }
 
 
@@ -125,6 +133,7 @@ def call_gemini(prompt):
                     raise
 
                 if attempt < MAX_RETRIES - 1:
+
                     wait_time = 2 ** attempt
 
                     print(
@@ -447,6 +456,7 @@ def apply_code_changes(repo_path, changes):
         # Prevent escaping repository.
         try:
             file_path.relative_to(root)
+
         except ValueError:
             failed.append(
                 {

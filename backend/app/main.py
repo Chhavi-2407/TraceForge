@@ -464,6 +464,12 @@ def run_tests(
         }
 
 
+    command_str = (
+        command
+        if isinstance(command, str)
+        else " ".join(command)
+    )
+
     try:
 
         result = subprocess.run(
@@ -476,7 +482,9 @@ def run_tests(
 
             text=True,
 
-            timeout=120
+            timeout=120,
+
+            shell=True
 
         )
 
@@ -501,7 +509,7 @@ def run_tests(
                 result.returncode == 0,
 
             "command":
-                " ".join(command),
+                command_str,
 
             "output":
                 output[-12000:]
@@ -520,7 +528,7 @@ def run_tests(
                 False,
 
             "command":
-                " ".join(command),
+                command_str,
 
             "output":
                 "Test execution timed out after 120 seconds."
@@ -539,7 +547,7 @@ def run_tests(
                 False,
 
             "command":
-                " ".join(command),
+                command_str,
 
             "output":
                 f"Test execution error: {error}"
