@@ -127,11 +127,12 @@ class RunRequest(BaseModel):
     def validate_repo_path(cls, value: str) -> str:
         if not value or not value.strip():
             raise ValueError("Repository path cannot be empty.")
-        path = Path(value.strip()).expanduser().resolve()
+        cleaned = value.strip()
+        path = Path(cleaned).expanduser().resolve()
         if not path.exists():
-            raise ValueError(f"Repository path does not exist: {value}")
+            raise ValueError(f"Repository path does not exist: {cleaned}")
         if not path.is_dir():
-            raise ValueError(f"Repository path is not a directory: {value}")
+            raise ValueError(f"Repository path is not a directory: {cleaned}")
         return str(path)
 
 
