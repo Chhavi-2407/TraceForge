@@ -29,6 +29,7 @@
 # IMPORTS
 # ============================================================
 
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 try:
@@ -1220,6 +1221,20 @@ async def execute_run(
 
 
             run["test_result"] = test_result
+
+            # -------------------------------------------------
+            # Store test status
+            # -------------------------------------------------
+
+            # Store a simple test status for the API response.
+            if not test_result["executed"]:
+                run["tests"] = "Not available"
+
+            elif test_result["passed"]:
+                run["tests"] = "Passed"
+
+            else:
+                run["tests"] = "Failed"
 
 
             # -------------------------------------------------
