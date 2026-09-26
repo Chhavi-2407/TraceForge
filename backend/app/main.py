@@ -343,114 +343,94 @@ def get_stage(
 # ============================================================
 # TEST COMMAND DETECTION
 # ============================================================
-
-def detect_test_command(
-    repo_path: str
-):
-
+def detect_test_command(repo_path):
     root = Path(repo_path)
 
+    # Python / pytest at repository root
+    if (root / "pytest.ini").exists():
+        return "python3 -m pytest -q"
 
-    # --------------------------------------------------------
-    # Python / pytest
-    # --------------------------------------------------------
-
-    pyproject = root / "pyproject.toml"
-
-    pytest_ini = root / "pytest.ini"
-
-    if pytest_ini.exists():
-
-        return [
-            sys.executable,
-            "-m",
-            "pytest"
-        ]
-
-
-    if pyproject.exists():
-
+    if (root / "pyproject.toml").exists():
         try:
-
-            content = pyproject.read_text(
+            content = (root / "pyproject.toml").read_text(
                 encoding="utf-8",
-                errors="ignore"
+                errors="ignore",
             )
 
             if "pytest" in content:
-
-                return [
-                    sys.executable,
-                    "-m",
-                    "pytest"
-                ]
+                return "python3 -m pytest -q"
 
         except Exception:
-
             pass
 
+    if (root / "tests").is_dir():
+        return "python3 -m pytest -q"
 
-    # --------------------------------------------------------
-    # Node / npm
-    # --------------------------------------------------------
+    # Python tests inside backend
+    backend_dir = root / "backend"
 
+    if backend_dir.is_dir():
+        if (backend_dir / "tests").is_dir():
+            return "cd backend && python3 -m pytest -q"
+
+        if (backend_dir / "pytest.ini").exists():
+            return "cd backend && python3 -m pytest -q"
+
+    # Node.js
     package_json = root / "package.json"
 
-
     if package_json.exists():
-
         try:
-
-            package_data = json.loads(
-
+            package = json.loads(
                 package_json.read_text(
-                    encoding="utf-8"
+                    encoding="utf-8",
+                    errors="ignore",
                 )
-
             )
 
-            scripts = package_data.get(
-                "scripts",
-                {}
-            )
+            scripts = package.get("scripts", {})
 
+            if scripts.get("test:run"):
+                return "npm run test:run"
 
-            if "test:run" in scripts:
-
-                return [
-                    "npm",
-                    "run",
-                    "test:run"
-                ]
-
-
-            if "test" in scripts:
-
-                test_script = scripts["test"]
-
-
-                # Avoid default Vite placeholder
-                if (
-                    "no test specified"
-                    not in test_script.lower()
-                ):
-
-                    return [
-                        "npm",
-                        "test"
-                    ]
+            if (
+                scripts.get("test")
+                and "no test specified"
+                not in scripts.get("test", "").lower()
+            ):
+                return "npm test"
 
         except Exception:
-
             pass
 
+    # Frontend package
+    frontend_package = root / "frontend" / "package.json"
 
-    # --------------------------------------------------------
-    # No supported test suite
-    # --------------------------------------------------------
+    if frontend_package.exists():
+        try:
+            package = json.loads(
+                frontend_package.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+            )
+
+            scripts = package.get("scripts", {})
+
+            if scripts.get("test:run"):
+                return "cd frontend && npm run test:run"
+
+            if (
+                scripts.get("test")
+                and "no test specified"
+                not in scripts.get("test", "").lower()
+            ):
+                return "cd frontend && npm test"
+
+        except Exception:
+            pass
 
     return None
-
 
 # ============================================================
 # RUN TESTS
