@@ -1284,7 +1284,7 @@ async def execute_run(
                     api_key,
                     provider,
                     model or None,
-                    patch_error=error_details,
+                    error_details,
                 )
 
                 new_changes = patch_result.get("changes", [])
