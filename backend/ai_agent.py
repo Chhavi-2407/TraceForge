@@ -5,34 +5,26 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
+import requests
 
 
 # ============================================================
 # CONFIG
 # ============================================================
 
-# Always load .env from the backend directory.
-# This works whether the file is imported from:
-#   backend/
-# or from:
-#   TraceForge/
+# Load .env only for NON-API configuration.
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(ENV_PATH)
 
-api_key = os.getenv("GEMINI_API_KEY")
+# IMPORTANT:
+# There is NO hardcoded/default API key anymore.
+#
+# The API key will come from the user at runtime.
+#
+# Example:
+# analyze_issue(issue, repo_path, api_key, model, provider)
 
-if not api_key:
-    raise RuntimeError("GEMINI_API_KEY is missing from backend/.env")
 
-client = genai.Client(api_key=api_key)
-
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-
-# Optional fallback.
-# Leave empty if you don't want to configure one.
-FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
-
-MAX_RETRIES = 3
 
 
 # ============================================================
@@ -69,57 +61,219 @@ IGNORED_DIRS = {
 
 
 # ============================================================
-# GEMINI CALL WITH RETRY
+# AI PROVIDER
 # ============================================================
 
-def call_gemini(prompt):
-    """
-    Calls Gemini with automatic retry handling.
+class AIResponse:
+    """Provider-neutral response wrapper used by TraceForge."""
 
-    Handles temporary 503 / UNAVAILABLE errors using
-    exponential backoff.
+    def __init__(self, text):
+        self.text = text
 
-    If GEMINI_FALLBACK_MODEL is configured, it will also
-    try that model after the primary model fails.
-    """
 
-    models = [MODEL_NAME]
+MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
+FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
 
-    if FALLBACK_MODEL and FALLBACK_MODEL != MODEL_NAME:
+MAX_RETRIES = 3
+REQUEST_TIMEOUT = 120
+
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+
+QWEN_URL = (
+    "https://dashscope.aliyuncs.com/"
+    "compatible-mode/v1/chat/completions"
+)
+
+
+def create_ai_client(provider, api_key):
+    """Validate the runtime provider and API key."""
+
+    if not api_key or not api_key.strip():
+        raise ValueError(
+            "API key is required. Please configure your AI provider "
+            "and API key in TraceForge Settings."
+        )
+
+    provider = (provider or "gemini").strip().lower()
+
+    if provider not in {"gemini", "deepseek", "qwen"}:
+        raise ValueError(
+            f"Unsupported AI provider: {provider}. "
+            "Choose Gemini, DeepSeek, or Qwen."
+        )
+
+    if provider == "gemini":
+        return genai.Client(api_key=api_key.strip())
+
+    return {
+        "provider": provider,
+        "api_key": api_key.strip(),
+    }
+
+
+def _call_openai_compatible(url, api_key, model, prompt):
+    """Call DeepSeek/Qwen OpenAI-compatible API."""
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are the AI reasoning engine of TraceForge. "
+                    "Follow the user's instructions exactly and return "
+                    "only the requested output."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        "stream": False,
+    }
+
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=REQUEST_TIMEOUT,
+    )
+
+    if not response.ok:
+        try:
+            detail = response.json()
+        except Exception:
+            detail = response.text[:1000]
+
+        raise RuntimeError(
+            f"AI provider request failed with HTTP "
+            f"{response.status_code}: {detail}"
+        )
+
+    data = response.json()
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(
+            "AI provider returned an unexpected response format."
+        ) from exc
+
+    if not content:
+        raise RuntimeError("AI provider returned an empty response.")
+
+    return AIResponse(content)
+
+
+# ============================================================
+# AI CALL WITH RETRY
+# ============================================================
+
+def call_ai(
+    prompt,
+    api_key,
+    provider="gemini",
+    model=None,
+):
+    """Call the selected AI provider using the user's runtime key."""
+
+    provider = (provider or "gemini").strip().lower()
+
+    if not api_key or not api_key.strip():
+        raise ValueError(
+            "API key is required. Please configure your AI provider "
+            "and API key in TraceForge Settings."
+        )
+
+    if model and model.strip():
+        selected_model = model.strip()
+    elif provider == "gemini":
+        selected_model = MODEL_NAME
+    elif provider == "deepseek":
+        selected_model = "deepseek-chat"
+    else:
+        selected_model = "qwen-plus"
+
+    client = create_ai_client(
+        provider=provider,
+        api_key=api_key,
+    )
+
+    models = [selected_model]
+
+    if (
+        provider == "gemini"
+        and not model
+        and FALLBACK_MODEL
+        and FALLBACK_MODEL != selected_model
+    ):
         models.append(FALLBACK_MODEL)
 
     last_error = None
 
-    for model in models:
+    for current_model in models:
 
         for attempt in range(MAX_RETRIES):
 
             try:
+
                 print(
-                    f"[TraceForge AI] Calling {model} "
+                    f"[TraceForge AI] Calling "
+                    f"{provider}/{current_model} "
                     f"(attempt {attempt + 1}/{MAX_RETRIES})"
                 )
 
-                response = client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                )
+                if provider == "gemini":
 
-                if not response or not response.text:
-                    raise RuntimeError(
-                        f"Gemini returned an empty response using {model}"
+                    response = client.models.generate_content(
+                        model=current_model,
+                        contents=prompt,
+                    )
+
+                    if not response or not response.text:
+                        raise RuntimeError(
+                            f"{provider} returned an empty response."
+                        )
+
+                    result = AIResponse(response.text)
+
+                elif provider == "deepseek":
+
+                    result = _call_openai_compatible(
+                        DEEPSEEK_URL,
+                        api_key.strip(),
+                        current_model,
+                        prompt,
+                    )
+
+                elif provider == "qwen":
+
+                    result = _call_openai_compatible(
+                        QWEN_URL,
+                        api_key.strip(),
+                        current_model,
+                        prompt,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported AI provider: {provider}"
                     )
 
                 print(
-                    f"[TraceForge AI] Response received from {model}"
+                    f"[TraceForge AI] Response received from "
+                    f"{provider}/{current_model}"
                 )
 
-                return response
+                return result
 
             except Exception as exc:
 
                 last_error = exc
-
                 error_text = str(exc)
 
                 is_temporary = (
@@ -127,6 +281,10 @@ def call_gemini(prompt):
                     or "UNAVAILABLE" in error_text
                     or "temporarily" in error_text.lower()
                     or "high demand" in error_text.lower()
+                    or "429" in error_text
+                    or "rate limit" in error_text.lower()
+                    or "timeout" in error_text.lower()
+                    or "timed out" in error_text.lower()
                 )
 
                 if not is_temporary:
@@ -137,18 +295,39 @@ def call_gemini(prompt):
                     wait_time = 2 ** attempt
 
                     print(
-                        f"[TraceForge AI] Temporary Gemini error. "
+                        f"[TraceForge AI] Temporary AI error. "
                         f"Retrying in {wait_time}s..."
                     )
 
                     time.sleep(wait_time)
 
         print(
-            f"[TraceForge AI] Primary model {model} exhausted retries."
+            f"[TraceForge AI] Model {current_model} "
+            f"exhausted retries."
         )
 
     raise RuntimeError(
-        f"Gemini request failed after retries. Last error: {last_error}"
+        "AI request failed after retries. "
+        f"Last error: {last_error}"
+    )
+
+
+# ============================================================
+# BACKWARD COMPATIBILITY
+# ============================================================
+
+def call_gemini(
+    prompt,
+    api_key,
+    model=None,
+):
+    """Backward-compatible Gemini helper."""
+
+    return call_ai(
+        prompt=prompt,
+        api_key=api_key,
+        provider="gemini",
+        model=model,
     )
 
 
@@ -215,8 +394,8 @@ def read_repository(repo_path):
 
 def build_repository_context(repo_path):
     """
-    Converts repository files into a bounded context string
-    for Gemini.
+    Converts repository files into a bounded context
+    for the AI model.
     """
 
     files = read_repository(repo_path)
@@ -257,7 +436,7 @@ def build_repository_context(repo_path):
 
 def parse_json_response(raw_text):
     """
-    Converts Gemini JSON response into Python dict.
+    Converts AI JSON response into Python dict.
     Handles markdown JSON fences.
     """
 
@@ -277,7 +456,7 @@ def parse_json_response(raw_text):
 
     except json.JSONDecodeError as exc:
         raise RuntimeError(
-            "Gemini returned invalid JSON.\n"
+            "AI returned invalid JSON.\n"
             f"Response:\n{text}"
         ) from exc
 
@@ -286,9 +465,16 @@ def parse_json_response(raw_text):
 # ISSUE ANALYSIS
 # ============================================================
 
-def analyze_issue(issue, repo_path):
+def analyze_issue(
+    issue,
+    repo_path,
+    api_key,
+    provider="gemini",
+    model=None,
+):
     """
-    Uses Gemini to understand the issue and create a plan.
+    Uses the selected AI provider to understand
+    the issue and create a plan.
     """
 
     repository_context = build_repository_context(repo_path)
@@ -332,7 +518,12 @@ Rules:
 6. Keep the response valid JSON.
 """
 
-    response = call_gemini(prompt)
+    response = call_ai(
+        prompt=prompt,
+        api_key=api_key,
+        provider=provider,
+        model=model,
+    )
 
     result = parse_json_response(response.text)
 
@@ -348,9 +539,13 @@ def generate_code_changes(
     repo_path,
     hypothesis,
     plan,
+    api_key,
+    provider="gemini",
+    model=None,
 ):
     """
-    Asks Gemini to generate exact safe text replacements.
+    Asks the selected AI provider to generate
+    exact safe text replacements.
     """
 
     repository_context = build_repository_context(repo_path)
@@ -401,13 +596,18 @@ STRICT RULES:
 11. Return valid JSON only.
 """
 
-    response = call_gemini(prompt)
+    response = call_ai(
+        prompt=prompt,
+        api_key=api_key,
+        provider=provider,
+        model=model,
+    )
 
     result = parse_json_response(response.text)
 
     if "changes" not in result:
         raise RuntimeError(
-            "Gemini response does not contain 'changes'."
+            "AI response does not contain 'changes'."
         )
 
     return result
@@ -419,7 +619,7 @@ STRICT RULES:
 
 def apply_code_changes(repo_path, changes):
     """
-    Safely applies Gemini-generated text replacements.
+    Safely applies AI-generated text replacements.
     """
 
     root = Path(repo_path).resolve()
@@ -550,37 +750,7 @@ if __name__ == "__main__":
 
     print("TraceForge AI Agent")
     print("-------------------")
-
-    repo = Path(__file__).resolve().parent.parent
-
-    issue = "Fix API validation bug"
-
-    print("\nAnalyzing issue...\n")
-
-    analysis = analyze_issue(
-        issue,
-        repo,
-    )
-
+    print()
     print(
-        json.dumps(
-            analysis,
-            indent=2,
-        )
-    )
-
-    print("\nGenerating code changes...\n")
-
-    changes = generate_code_changes(
-        issue,
-        repo,
-        analysis["hypothesis"],
-        analysis["plan"],
-    )
-
-    print(
-        json.dumps(
-            changes,
-            indent=2,
-        )
+        "AI API keys must now be provided at runtime."
     )

@@ -1,25 +1,218 @@
-* {
+/* ==============================================================================
+   TRACEFORGE — DESIGN SYSTEM & TOKENS
+   Dark-first, high-density autonomous developer tool interface.
+   ============================================================================== */
+
+:root {
+  /* Surface & Background Hierarchy */
+  --bg-base: #05070B;
+  --bg-surface: #0A0F16;
+  --bg-surface-elevated: #0D1420;
+  --bg-surface-subtle: #111A29;
+  --bg-surface-hover: #152236;
+  --bg-surface-active: #1A2A42;
+
+  /* Borders */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-focus: #8B5CF6;
+  --border-accent: rgba(139, 92, 246, 0.35);
+
+  /* Primary Brand Accent (Electric Violet) */
+  --accent-primary: #8B5CF6;
+  --accent-primary-hover: #7C3AED;
+  --accent-primary-subtle: rgba(139, 92, 246, 0.12);
+  --accent-primary-glow: rgba(139, 92, 246, 0.25);
+
+  /* Supporting Accent (Cyan / Sky) */
+  --accent-cyan: #22D3EE;
+  --accent-cyan-subtle: rgba(34, 211, 238, 0.12);
+  --accent-cyan-hover: #06B6D4;
+  --accent-blue: #38BDF8;
+
+  /* Status Colors */
+  --status-success: #34D399;
+  --status-success-bg: rgba(52, 211, 153, 0.10);
+  --status-success-border: rgba(52, 211, 153, 0.25);
+
+  --status-warning: #F59E0B;
+  --status-warning-bg: rgba(245, 158, 11, 0.10);
+  --status-warning-border: rgba(245, 158, 11, 0.25);
+
+  --status-error: #F87171;
+  --status-error-bg: rgba(248, 113, 113, 0.10);
+  --status-error-border: rgba(248, 113, 113, 0.25);
+
+  --status-running: #A78BFA;
+  --status-running-bg: rgba(167, 139, 250, 0.12);
+  --status-running-border: rgba(167, 139, 250, 0.30);
+
+  /* Typography Colors */
+  --text-primary: #F8FAFC;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+  --text-dim: #475569;
+
+  /* Typography Stack */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;
+
+  /* Radius */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Elevation Shadows */
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 14px 32px -4px rgba(0, 0, 0, 0.7);
+  --shadow-glow-purple: 0 0 28px -4px rgba(139, 92, 246, 0.35);
+  --shadow-glow-cyan: 0 0 28px -4px rgba(34, 211, 238, 0.25);
+
+  /* Dimensions */
+  --sidebar-width: 250px;
+  --topbar-height: 56px;
+  --content-max-width: 1240px;
+
+  /* Transitions */
+  --ease-fast: 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-smooth: 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ==============================================================================
+   RESET & BASE RULES
+   ============================================================================== */
+
+*, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
-:root {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
-    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+html {
+  min-height: 100%;
+  background: var(--bg-base);
   color-scheme: dark;
-  background-color: #0d1117;
-  color: #f0f6fc;
 }
 
 body {
   margin: 0;
+  padding: 0;
+  min-width: 320px;
   min-height: 100vh;
-  background-color: #0d1117;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
 }
 
 #root {
-  min-height: 100vh;
-  display: flex;
+  width: 100%;
+  height: 100vh;
+  overflow: hidden;
 }
 
+/* ==============================================================================
+   SCROLLBARS
+   ============================================================================== */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ==============================================================================
+   TYPOGRAPHY UTILITIES
+   ============================================================================== */
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--text-primary);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+code, kbd, samp, pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+a {
+  color: var(--accent-cyan);
+  text-decoration: none;
+  transition: color var(--ease-fast);
+}
+
+a:hover {
+  color: #67e8f9;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  outline: none;
+  color: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+/* ==============================================================================
+   SHARED KEYFRAME ANIMATIONS
+   ============================================================================== */
+
+@keyframes pulse-dot {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.35);
+    opacity: 0.6;
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
