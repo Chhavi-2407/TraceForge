@@ -65,7 +65,8 @@ if str(BACKEND_DIR) not in sys.path:
 from ai_agent import (
     analyze_issue,
     generate_code_changes,
-    apply_code_changes
+    apply_code_changes,
+    call_ai
 )
 
 
@@ -116,6 +117,43 @@ class RunRequest(BaseModel):
 
     repo_path: str
 
+    provider: str = "gemini"
+
+    api_key: str = ""
+
+    model: str = ""
+
+    @field_validator("provider")
+    @classmethod
+    def validate_provider(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+
+        allowed = {
+            "gemini",
+            "deepseek",
+            "qwen",
+        }
+
+        if cleaned not in allowed:
+            raise ValueError(
+                "Unsupported AI provider. "
+                "Choose Gemini, DeepSeek, or Qwen."
+            )
+
+        return cleaned
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: str) -> str:
+        # API key is supplied at runtime.
+        # Do not force it during schema parsing.
+        return value.strip() if value else ""
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        return value.strip()
+
     @field_validator("issue")
     @classmethod
     def validate_issue(cls, value: str) -> str:
@@ -142,6 +180,10 @@ class RunRequest(BaseModel):
 # ============================================================
 
 runs = []
+
+# Runtime-only AI credentials.
+# Never returned by the API or written to disk.
+run_credentials = {}
 
 
 # ============================================================
@@ -343,10 +385,41 @@ def get_stage(
 
 
 # ============================================================
-# TEST COMMAND DETECTION
-# ============================================================
+def has_make_target(content: str, target: str = "test") -> bool:
+    """Check if Makefile content defines a target matching `target`.
+
+    Ensures comments, variable assignments, and target prefixes/suffixes
+    (e.g. test-backend) are not misidentified as the exact target.
+    """
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line.startswith("\t"):
+            continue
+        if ":" in stripped:
+            target_part, rest = stripped.split(":", 1)
+            if rest.startswith("=") or any(op in target_part for op in ("=", "?=", "+=")):
+                continue
+            if target in target_part.split():
+                return True
+    return False
+
+
 def detect_test_command(repo_path):
     root = Path(repo_path)
+
+    # 1. Makefile at repository root with a 'test' target
+    for makefile_name in ("Makefile", "makefile", "GNUmakefile"):
+        makefile_path = root / makefile_name
+        if makefile_path.is_file():
+            try:
+                content = makefile_path.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+                if has_make_target(content, "test"):
+                    return "make test"
+            except Exception:
+                pass
 
     # Python / pytest at repository root
     if (root / "pytest.ini").exists():
@@ -839,6 +912,18 @@ async def execute_run(
     if run is None:
         return
 
+    # Retrieve runtime-only AI credentials.
+    credentials = run_credentials.get(run_id)
+
+    if not credentials:
+        run["status"] = "Failed"
+        run["completed_at"] = datetime.now().isoformat()
+        return
+
+    provider = credentials["provider"]
+    api_key = credentials["api_key"]
+    model = credentials["model"]
+
 
     try:
 
@@ -927,7 +1012,13 @@ async def execute_run(
 
             run["issue"],
 
-            run["repo_path"]
+            run["repo_path"],
+
+            api_key,
+
+            provider,
+
+            model or None
 
         )
 
@@ -1067,7 +1158,13 @@ async def execute_run(
 
                 hypothesis,
 
-                plan
+                plan,
+
+                api_key,
+
+                provider,
+
+                model or None
 
             )
 
@@ -1348,7 +1445,13 @@ Return the result as a concise software debugging analysis.
 
                 failure_issue,
 
-                run["repo_path"]
+                run["repo_path"],
+
+                api_key,
+
+                provider,
+
+                model or None
 
             )
 
@@ -1475,6 +1578,63 @@ Return the result as a concise software debugging analysis.
 
         run["changed_files"] = changed_files
 
+        # ----------------------------------------------------
+        # Build safe, frontend-friendly file change details.
+        # No API key or secret is included.
+        # ----------------------------------------------------
+        generated_changes = run.get(
+            "generated_changes",
+            []
+        )
+
+        file_change_details = []
+
+        if isinstance(generated_changes, list):
+            for change in generated_changes:
+                if not isinstance(change, dict):
+                    continue
+
+                path = (
+                    change.get("path")
+                    or change.get("file")
+                    or change.get("filename")
+                    or ""
+                )
+
+                if not path:
+                    continue
+
+                description = (
+                    change.get("description")
+                    or change.get("reason")
+                    or change.get("summary")
+                    or "File modified by TraceForge during this run."
+                )
+
+                file_change_details.append(
+                    {
+                        "path": str(path),
+                        "description": str(description),
+                    }
+                )
+
+        detail_by_path = {
+            item["path"]: item
+            for item in file_change_details
+        }
+
+        run["file_change_details"] = [
+            detail_by_path.get(
+                path,
+                {
+                    "path": path,
+                    "description":
+                        "File modified by TraceForge during this run.",
+                }
+            )
+            for path in changed_files
+        ]
+
 
         # If git is unavailable or repo isn't tracked,
         # use files_changed from patch engine.
@@ -1542,6 +1702,9 @@ Return the result as a concise software debugging analysis.
             datetime.now().isoformat()
         )
 
+        # Remove runtime credentials after successful completion.
+        run_credentials.pop(run_id, None)
+
 
     # ========================================================
     # GLOBAL ERROR HANDLING
@@ -1560,6 +1723,9 @@ Return the result as a concise software debugging analysis.
         run["completed_at"] = (
             datetime.now().isoformat()
         )
+
+        # Remove runtime credentials after failure.
+        run_credentials.pop(run_id, None)
 
 
         # Mark active stage as failed
@@ -1580,6 +1746,76 @@ Return the result as a concise software debugging analysis.
 
                 break
 
+# ============================================================
+# TEST AI CONNECTION
+# ============================================================
+
+class AITestRequest(BaseModel):
+
+    provider: str = "gemini"
+
+    api_key: str = ""
+
+    model: str = ""
+
+
+@app.post("/ai/test")
+async def test_ai_connection(request: AITestRequest):
+
+    provider = request.provider.strip().lower()
+    api_key = request.api_key.strip()
+    model = request.model.strip()
+
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="API key is required."
+        )
+
+    if provider not in {"gemini", "deepseek", "qwen"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported AI provider."
+        )
+
+    try:
+
+        test_prompt = """
+Respond with exactly this JSON:
+
+{
+  "status": "ok"
+}
+
+Do not add markdown.
+Do not add any explanation.
+"""
+
+        response = await asyncio.to_thread(
+            call_ai,
+            test_prompt,
+            api_key,
+            provider,
+            model or None,
+        )
+
+        return {
+            "success": True,
+            "provider": provider,
+            "model": model or "default",
+            "message": "AI connection successful."
+        }
+
+    except Exception as error:
+
+        print(
+            f"[TraceForge] AI connection test failed: {error}"
+        )
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"AI connection failed: {error}"
+        )
 
 # ============================================================
 # CREATE RUN
@@ -1685,6 +1921,14 @@ async def create_run(
         "files_changed":
             0,
 
+        # Final files detected as changed in the target repository.
+        "changed_files":
+            [],
+
+        # Safe descriptions for the changed files.
+        "file_change_details":
+            [],
+
         "created_at":
             datetime.now().isoformat(),
 
@@ -1700,6 +1944,14 @@ async def create_run(
     runs.append(
         new_run
     )
+
+    # Store AI credentials ONLY in memory.
+    # They are intentionally NOT part of new_run.
+    run_credentials[new_id] = {
+        "provider": run.provider,
+        "api_key": run.api_key,
+        "model": run.model,
+    }
 
 
     # --------------------------------------------------------

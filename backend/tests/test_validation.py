@@ -74,3 +74,22 @@ def test_repo_path_is_normalized(tmp_path):
     )
 
     assert request.repo_path == str(Path(tmp_path).expanduser().resolve())
+
+
+def test_detect_test_command_makefile(tmp_path):
+    from app.main import detect_test_command
+
+    # Makefile with a test target
+    makefile = tmp_path / "Makefile"
+    makefile.write_text(".PHONY: test\ntest:\n\tpytest\n")
+    assert detect_test_command(str(tmp_path)) == "make test"
+
+
+def test_detect_test_command_makefile_without_test_target(tmp_path):
+    from app.main import detect_test_command
+
+    # Makefile with only build target should not return make test
+    makefile = tmp_path / "Makefile"
+    makefile.write_text("build:\n\tnpm run build\n")
+    assert detect_test_command(str(tmp_path)) is None
+
