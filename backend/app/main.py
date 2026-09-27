@@ -1241,59 +1241,126 @@ async def execute_run(
             )
 
 
+            # -------------------------------------------------
+            # Automatic patch recovery if old_text mismatch occurs
+            # -------------------------------------------------
+
+            MAX_PATCH_RECOVERIES = 2
+            patch_recovered = False
+            recovery_count = 0
+
+            while failed and recovery_count < MAX_PATCH_RECOVERIES:
+
+                # Check if failure is due to stale/mismatched old_text or context issue
+                is_recoverable = any(
+                    f.get("error") in (
+                        "old_text not found",
+                        "old_text matched multiple locations",
+                    )
+                    for f in failed
+                )
+
+                if not is_recoverable:
+                    break
+
+                recovery_count += 1
+                error_details = "; ".join(
+                    f"{f.get('path', 'unknown')}: {f.get('error', 'unknown')} - {f.get('reason', '')}"
+                    for f in failed
+                )
+
+                print(
+                    f"[TraceForge] Patch context mismatch (recovery attempt {recovery_count}/{MAX_PATCH_RECOVERIES}). "
+                    f"Regenerating patch using current repository state..."
+                )
+
+                # Re-read CURRENT repository and request fresh patch from AI
+                patch_result = await asyncio.to_thread(
+                    generate_code_changes,
+                    run["issue"],
+                    run["repo_path"],
+                    hypothesis,
+                    plan,
+                    api_key,
+                    provider,
+                    model or None,
+                    patch_error=error_details,
+                )
+
+                new_changes = patch_result.get("changes", [])
+                if not new_changes:
+                    print("[TraceForge] Patch recovery returned no changes.")
+                    break
+
+                changes = new_changes
+                run["generated_changes"] = changes
+
+                # Backup newly targeted files
+                backups.update(
+                    create_backups(
+                        run["repo_path"],
+                        changes,
+                    )
+                )
+
+                # Attempt to apply regenerated patch
+                apply_result = await asyncio.to_thread(
+                    apply_code_changes,
+                    run["repo_path"],
+                    changes,
+                )
+
+                run["edit_result"] = apply_result
+                applied = apply_result.get("applied", [])
+                failed = apply_result.get("failed", [])
+
+                if apply_result.get("success"):
+                    patch_recovered = True
+                    break
+
+
             if failed:
 
                 # If some patches were applied but another
-                # patch failed, restore everything from this
-                # attempt.
-
+                # patch failed, restore everything from this attempt.
                 if applied:
 
                     restore_backups(
-
                         run["repo_path"],
-
-                        backups
-
+                        backups,
                     )
-
 
                 edit_stage["status"] = "Failed"
 
                 edit_stage["description"] = (
-
-                    f"Patch application failed: "
-                    f"{failed}"
-
+                    f"Patch application failed: {failed}"
                 )
 
-
                 raise RuntimeError(
-
-                    "Gemini generated an invalid or unsafe "
-                    "patch."
-
+                    f"Patch application failed: {failed}"
                 )
 
 
             run["files_changed"] = (
-
                 apply_result.get(
                     "files_changed",
-                    0
+                    len(applied)
                 )
-
             )
-
 
             edit_stage["status"] = "Completed"
 
-            edit_stage["description"] = (
-
-                f"Applied {run['files_changed']} "
-                f"AI-generated file change(s)."
-
-            )
+            if patch_recovered:
+                edit_stage["description"] = (
+                    "Initial patch context did not match. "
+                    "Regenerated patch from current repository state "
+                    "and applied successfully."
+                )
+            else:
+                edit_stage["description"] = (
+                    f"Applied {run['files_changed']} "
+                    f"AI-generated file change(s)."
+                )
 
 
             # =================================================
@@ -1730,9 +1797,10 @@ Return the result as a concise software debugging analysis.
 
         # Mark active stage as failed
 
-        for stage_data in run[
-            "execution_trace"
-        ]:
+        for stage_data in run.get(
+            "execution_trace",
+            []
+        ):
 
             if stage_data["status"] == "Running":
 

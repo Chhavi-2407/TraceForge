@@ -542,6 +542,7 @@ def generate_code_changes(
     api_key,
     provider="gemini",
     model=None,
+    patch_error=None,
 ):
     """
     Asks the selected AI provider to generate
@@ -550,12 +551,22 @@ def generate_code_changes(
 
     repository_context = build_repository_context(repo_path)
 
+    recovery_instructions = ""
+    if patch_error:
+        recovery_instructions = f"""
+CRITICAL - PREVIOUS PATCH APPLICATION FAILED:
+The previous patch could not be applied because old_text did not match the current file. Re-inspect the current repository and generate a new patch. Copy old_text verbatim from the current file. Do not reconstruct or paraphrase old_text.
+
+Previous error details:
+{patch_error}
+"""
+
     prompt = f"""
 You are the code-editing engine of TraceForge.
 
 Your task is to generate the smallest safe code changes
 required to fix the user's issue.
-
+{recovery_instructions}
 USER ISSUE:
 {issue}
 
@@ -619,76 +630,112 @@ STRICT RULES:
 
 def apply_code_changes(repo_path, changes):
     """
-    Safely applies AI-generated text replacements.
+    Safely and atomically applies AI-generated text replacements.
+    All changes are validated in memory before any file is written.
+    If ANY change is invalid, no files are modified.
     """
 
     root = Path(repo_path).resolve()
 
-    applied = []
-    failed = []
+    if not isinstance(changes, list):
+        return {
+            "success": False,
+            "applied": [],
+            "failed": [
+                {
+                    "path": None,
+                    "error": "Invalid changes format",
+                    "reason": "Changes must be a list",
+                }
+            ],
+            "files_changed": 0,
+        }
 
+    failed = []
+    staged_contents = {}
+    staged_paths = []
+
+    # Phase 1: In-memory validation and staging
     for change in changes:
+
+        if not isinstance(change, dict):
+            failed.append(
+                {
+                    "path": None,
+                    "error": "Invalid change object",
+                    "reason": "Each change must be a dictionary",
+                }
+            )
+            continue
 
         relative_path = change.get("path")
         old_text = change.get("old_text")
         new_text = change.get("new_text")
 
-        if not relative_path:
+        if not relative_path or not isinstance(relative_path, str) or not relative_path.strip():
             failed.append(
                 {
                     "path": relative_path,
                     "error": "Missing file path",
+                    "reason": "No valid file path provided in change",
                 }
             )
             continue
 
-        if old_text is None or new_text is None:
+        relative_path = relative_path.strip()
+
+        if old_text is None or new_text is None or not old_text:
             failed.append(
                 {
                     "path": relative_path,
                     "error": "Missing old_text or new_text",
+                    "reason": "Both old_text and new_text are required and old_text cannot be empty",
                 }
             )
             continue
 
         file_path = (root / relative_path).resolve()
 
-        # Prevent escaping repository.
+        # Prevent escaping repository boundary
         try:
             file_path.relative_to(root)
-
         except ValueError:
             failed.append(
                 {
                     "path": relative_path,
                     "error": "Path escapes repository boundary",
+                    "reason": "Path must stay inside repository",
                 }
             )
             continue
 
-        # Never modify .env.
-        if file_path.name == ".env":
+        # Prohibit .env modification
+        if file_path.name == ".env" or any(part == ".env" for part in file_path.parts):
             failed.append(
                 {
                     "path": relative_path,
                     "error": "Modification of .env is prohibited",
+                    "reason": ".env files cannot be modified",
                 }
             )
             continue
 
-        if not file_path.exists():
+        # File must exist
+        if not file_path.exists() or not file_path.is_file():
             failed.append(
                 {
                     "path": relative_path,
                     "error": "File does not exist",
+                    "reason": "Target file was not found in repository",
                 }
             )
             continue
 
         try:
-            content = file_path.read_text(
-                encoding="utf-8"
-            )
+            if file_path in staged_contents:
+                content = staged_contents[file_path]
+            else:
+                content = file_path.read_text(encoding="utf-8")
 
             occurrences = content.count(old_text)
 
@@ -697,6 +744,7 @@ def apply_code_changes(repo_path, changes):
                     {
                         "path": relative_path,
                         "error": "old_text not found",
+                        "reason": "Generated patch context does not match current file",
                     }
                 )
                 continue
@@ -705,9 +753,8 @@ def apply_code_changes(repo_path, changes):
                 failed.append(
                     {
                         "path": relative_path,
-                        "error": (
-                            "old_text matched multiple locations"
-                        ),
+                        "error": "old_text matched multiple locations",
+                        "reason": "old_text must uniquely match exactly one location",
                     }
                 )
                 continue
@@ -718,26 +765,40 @@ def apply_code_changes(repo_path, changes):
                 1,
             )
 
-            file_path.write_text(
-                updated_content,
-                encoding="utf-8",
-            )
-
-            applied.append(relative_path)
+            staged_contents[file_path] = updated_content
+            staged_paths.append(relative_path)
 
         except Exception as exc:
-
             failed.append(
                 {
                     "path": relative_path,
                     "error": str(exc),
+                    "reason": "Failed to read or validate file content",
                 }
             )
 
+    # If ANY change failed, do NOT write anything to disk (atomic rejection)
+    if failed:
+        return {
+            "success": False,
+            "applied": [],
+            "failed": failed,
+            "files_changed": 0,
+        }
+
+    # Phase 2: All changes passed validation; write updated files to disk
+    applied = []
+    for file_path, new_content in staged_contents.items():
+        file_path.write_text(
+            new_content,
+            encoding="utf-8",
+        )
+        applied.append(str(file_path.relative_to(root)))
+
     return {
-        "success": len(failed) == 0,
+        "success": True,
         "applied": applied,
-        "failed": failed,
+        "failed": [],
         "files_changed": len(applied),
     }
 
